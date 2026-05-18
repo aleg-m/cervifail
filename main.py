@@ -1,202 +1,115 @@
-"""
-cervifail/main.py
-=================
-Cervifail Phase 2 — Clinical Decision Support Tool
+import streamlit as st
+import os, sys, csv
+import pandas as pd
 
-Two modes:
-  python main.py --dashboard          Run cohort dashboard on the 20-patient CSV
-  python main.py --assess             Interactive single-patient risk assessment
-  python main.py                      Runs both (default)
-
-CSV expected at: ../Cervifail_-_final_data.csv
-"""
-
-import os, sys, argparse, csv, textwrap
+# Keep your existing relative path logic
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from model     import PatientInput, run_model, ModelOutput
+from model     import PatientInput, run_model
 from data      import load_csv
 from visualize import build_dashboard
 
-CSV_PATH   = os.path.join(os.path.dirname(__file__), "..", "Cervifail_-_final_data.csv")
-OUT_DIR    = os.path.join(os.path.dirname(__file__), "..", "output")
-DASH_HTML  = os.path.join(OUT_DIR, "cervifail_dashboard.html")
-RESULTS_CSV = os.path.join(OUT_DIR, "cervifail_results.csv")
-
-os.makedirs(OUT_DIR, exist_ok=True)
+# --- CONFIG & STYLING ---
+st.set_page_config(page_title="Cervifail CDS", layout="wide")
 
 TIER_ICONS = {"Critical": "🔴", "Elevated": "🟠", "Moderate": "🟡", "Low": "🟢"}
 TIER_ADVICE = {
-    "Critical": (
-        "URGENT: P(CI) ≥ 75%. Immediate clinical review recommended. "
-        "Consider cervical cerclage evaluation, progesterone therapy, "
-        "and enhanced surveillance protocol."
-    ),
-    "Elevated": (
-        "ELEVATED: P(CI) 50–74%. Enhanced monitoring advised. "
-        "Discuss progesterone supplementation and activity modification. "
-        "Repeat ultrasound in 1–2 weeks."
-    ),
-    "Moderate": (
-        "MODERATE: P(CI) 30–49%. Routine monitoring with increased vigilance. "
-        "Patient education on warning signs. Follow-up in 2–3 weeks."
-    ),
-    "Low": (
-        "LOW: P(CI) < 30%. Structurally sound cervix for gestational age. "
-        "Continue standard antenatal care."
-    ),
+    "Critical": "URGENT: P(CI) ≥ 75%. Immediate clinical review recommended. Consider cervical cerclage evaluation, progesterone therapy, and enhanced surveillance protocol.",
+    "Elevated": "ELEVATED: P(CI) 50–74%. Enhanced monitoring advised. Discuss progesterone supplementation and activity modification.",
+    "Moderate": "MODERATE: P(CI) 30–49%. Routine monitoring with increased vigilance. Patient education on warning signs.",
+    "Low": "LOW: P(CI) < 30%. Structurally sound cervix for gestational age. Continue standard antenatal care."
 }
 
-
-# ── Helpers ───────────────────────────────────────────────────────────────
-
-def _ask(prompt, cast=float, allow_blank=False, default=None):
-    while True:
-        raw = input(f"  {prompt}: ").strip()
-        if allow_blank and raw == "":
-            return default
-        try:
-            return cast(raw)
-        except ValueError:
-            print("    ↳ Invalid input. Please try again.")
+CSV_PATH = "/Users/mimi/Programming/bench/cervifail/final_data.csv"  # Adjust as needed
 
 
-def print_result(patient: PatientInput, out: ModelOutput):
-    tier  = out.risk_tier
-    icon  = TIER_ICONS[tier]
-    divider = "─" * 62
+# --- APP LAYOUT ---
+st.title("🛡️ CERVIFAIL · Phase 2")
+st.markdown("### Clinical Decision Support Tool for Cervical Failure Risk")
 
-    print(f"\n  {divider}")
-    print(f"  CERVIFAIL · Risk Assessment Result")
-    print(f"  {divider}")
-    print(f"  Patient         : {patient.patient_name or patient.patient_id or 'N/A'}")
-    print(f"  Gestational Age : {patient.weeks_completed}w {patient.days_completed}d  "
-          f"({out.gestational_age_decimal:.2f} decimal weeks)")
-    print()
-    print(f"  ── Equation Outputs ─────────────────────────────────────")
-    print(f"  Eq. A  CL predicted (regression)  : {out.cl_predicted_cm:.3f} cm")
-    print(f"  Eq. A  CL used (ultrasound/pred.)  : {out.cl_used_cm:.3f} cm")
-    print(f"  Eq. B  CL / GA adjusted            : {out.cl_adjusted:.4f}")
-    print(f"  Eq. C  CSIS                        : {out.csis:.4f}")
-    print(f"  Eq. D  P(Cervical Insufficiency)   : {out.p_cervical_insufficiency*100:.1f}%")
-    print()
-    print(f"  ── Risk Classification ──────────────────────────────────")
-    print(f"  {icon} {out.risk_label} — {tier} Tier")
-    print()
-    advice = textwrap.fill(TIER_ADVICE[tier], width=58,
-                           initial_indent="  ", subsequent_indent="  ")
-    print(advice)
-    print(f"  {divider}\n")
+# Sidebar for Navigation
+mode = st.sidebar.radio("Navigate", ["Single Patient Assessment", "Cohort Dashboard"])
 
+# --- MODE 1: SINGLE PATIENT ASSESSMENT ---
+if mode == "Single Patient Assessment":
+    st.header("Single Patient Risk Assessment")
+    
+    with st.form("assessment_form"):
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            name = st.text_input("Patient Name / ID", value="Patient-001")
+            weeks = st.slider("Completed Weeks of Pregnancy", 0, 42, 20)
+            days = st.slider("Completed Days of Current Week", 0, 6, 0)
+            preg = st.number_input("Previous pregnancies ≥ 23 weeks", min_value=0, step=1)
+            cs = st.number_input("Previous Cesarean Sections", min_value=0, step=1)
+            isch = st.selectbox("Isthmic Contraction Present?", options=[0, 1], format_func=lambda x: "Yes" if x==1 else "No")
 
-def save_results(patients, outputs):
-    fields = ["patient_id", "patient_name", "gestational_age_decimal",
-              "cl_used_cm", "cl_predicted_cm", "cl_adjusted",
-              "csis", "p_cervical_insufficiency", "risk_label", "risk_tier"]
-    with open(RESULTS_CSV, "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=fields)
-        w.writeheader()
-        for p, o in zip(patients, outputs):
-            w.writerow({
-                "patient_id":               p.patient_id,
-                "patient_name":             p.patient_name,
-                "gestational_age_decimal":  round(o.gestational_age_decimal, 3),
-                "cl_used_cm":               round(o.cl_used_cm, 3),
-                "cl_predicted_cm":          round(o.cl_predicted_cm, 3),
-                "cl_adjusted":              round(o.cl_adjusted, 4),
-                "csis":                     round(o.csis, 4),
-                "p_cervical_insufficiency": round(o.p_cervical_insufficiency, 4),
-                "risk_label":               o.risk_label,
-                "risk_tier":                o.risk_tier,
-            })
-    print(f"  Results CSV      → {RESULTS_CSV}")
+        with col2:
+            age = st.number_input("Maternal Age (years)", min_value=12.0, max_value=60.0, value=30.0)
+            wt = st.number_input("Pre-pregnancy weight (kg)", min_value=30.0, value=70.0)
+            ht = st.number_input("Maternal height (cm)", min_value=100.0, value=165.0)
+            urine = st.number_input("Urine volume (ml) [Optional]", min_value=0.0, value=0.0)
+            cl = st.number_input("Ultrasound cervical length (cm) [Optional]", min_value=0.0, value=0.0)
 
+        submitted = st.form_submit_button("Run Risk Assessment")
 
-def run_cohort_dashboard():
-    print("\n  Loading patient data …")
+    if submitted:
+        # Map inputs to your existing Model class
+        patient = PatientInput(
+            weeks_completed=weeks, days_completed=days,
+            prev_pregnancies_gte23w=preg, prev_cesarean_sections=cs,
+            maternal_age=age, weight_kg=wt, height_cm=ht,
+            isthmic_contraction=isch, 
+            urine_volume_ml=urine if urine > 0 else None,
+            measured_cl_cm=cl if cl > 0 else None,
+            patient_id="ASSESS-001", patient_name=name,
+        )
+        
+        out = run_model(patient)
+        
+        # Display Results
+        st.divider()
+        tier = out.risk_tier
+        st.subheader(f"{TIER_ICONS[tier]} Risk Tier: {tier}")
+        
+        m1, m2, m3 = st.columns(3)
+        m1.metric("P(Cervical Insufficiency)", f"{out.p_cervical_insufficiency*100:.1f}%")
+        m2.metric("Predicted CL", f"{out.cl_predicted_cm:.2f} cm")
+        m3.metric("CSIS Score", f"{out.csis:.4f}")
+
+        st.info(f"**Clinical Advice:** {TIER_ADVICE[tier]}")
+
+# --- MODE 2: COHORT DASHBOARD ---
+elif mode == "Cohort Dashboard":
+    st.header("Cohort Analytics Dashboard")
+    
     if not os.path.exists(CSV_PATH):
-        print(f"  ✗ CSV not found at: {CSV_PATH}")
-        print("    Place Cervifail_-_final_data.csv one directory above main.py")
-        return
-    patients = load_csv(CSV_PATH)
-    print(f"  Loaded {len(patients)} patients from CSV.")
-    outputs  = [run_model(p) for p in patients]
-    save_results(patients, outputs)
-
-    tiers = [o.risk_tier for o in outputs]
-    high  = sum(1 for o in outputs if o.risk_label == "High Risk")
-    print(f"\n  ── Cohort Summary ───────────────────────────────────────")
-    print(f"  Patients      : {len(patients)}")
-    for t in ["Critical", "Elevated", "Moderate", "Low"]:
-        print(f"  {TIER_ICONS[t]} {t:<10}: {tiers.count(t)}")
-    print(f"  High Risk total : {high} / {len(patients)}  "
-          f"({high/len(patients)*100:.0f}%)")
-    print(f"  Mean P(CI)      : {sum(o.p_cervical_insufficiency for o in outputs)/len(outputs)*100:.1f}%")
-
-    print("\n  Rendering Plotly dashboard …")
-    build_dashboard(patients, outputs, DASH_HTML)
-    print("  Open output/cervifail_dashboard.html in a browser.\n")
-
-
-def run_patient_assessment():
-    print("\n  ╔══════════════════════════════════════════════════════╗")
-    print("  ║   CERVIFAIL · Single Patient Risk Assessment        ║")
-    print("  ║   Enter patient data below to receive a prediction  ║")
-    print("  ╚══════════════════════════════════════════════════════╝\n")
-    print("  Fields marked [optional] may be left blank (press Enter).\n")
-
-    name  = input("  Patient name / ID (optional): ").strip() or "Patient"
-    weeks = _ask("Completed weeks of pregnancy", int)
-    days  = _ask("Completed days of current week (0–6)", int)
-    preg  = _ask("Previous pregnancies ≥23 weeks", int)
-    cs    = _ask("Previous cesarean sections", int)
-    age   = _ask("Maternal age (years)", float)
-    wt    = _ask("Pre-pregnancy weight (kg)", float)
-    ht    = _ask("Maternal height (cm)", float)
-    isch  = _ask("Isthmic contraction present? (0=No / 1=Yes)", int)
-    urine = _ask("Urine volume before ultrasound in ml [optional]",
-                 float, allow_blank=True, default=None)
-    cl    = _ask("Ultrasound cervical length in cm [optional — from MATLAB]",
-                 float, allow_blank=True, default=None)
-
-    patient = PatientInput(
-        weeks_completed=weeks, days_completed=days,
-        prev_pregnancies_gte23w=preg, prev_cesarean_sections=cs,
-        maternal_age=age, weight_kg=wt, height_cm=ht,
-        isthmic_contraction=isch, urine_volume_ml=urine,
-        measured_cl_cm=cl,
-        patient_id="ASSESS-001", patient_name=name,
-    )
-    out = run_model(patient)
-    print_result(patient, out)
-
-    again = input("  Assess another patient? (y/n): ").strip().lower()
-    if again == "y":
-        run_patient_assessment()
-
-
-def main():
-    parser = argparse.ArgumentParser(description="Cervifail Clinical Decision Support")
-    parser.add_argument("--dashboard", action="store_true",
-                        help="Generate cohort dashboard from CSV")
-    parser.add_argument("--assess", action="store_true",
-                        help="Interactive single-patient assessment")
-    args = parser.parse_args()
-
-    print("\n  ┌─────────────────────────────────────────────────────┐")
-    print("  │  CERVIFAIL  ·  Phase 2 Clinical Decision Support   │")
-    print("  │  Cervical Failure Risk Prediction Engine  v1.0     │")
-    print("  └─────────────────────────────────────────────────────┘")
-
-    # Default: run both
-    if not args.dashboard and not args.assess:
-        run_cohort_dashboard()
-        run_patient_assessment()
-    elif args.dashboard:
-        run_cohort_dashboard()
-    elif args.assess:
-        run_patient_assessment()
-
-
-if __name__ == "__main__":
-    main()
+        st.error(f"CSV not found at {CSV_PATH}. Please ensure the data file is in the parent directory.")
+    else:
+        if st.button("Load & Process CSV Data"):
+            patients = load_csv(CSV_PATH)
+            outputs  = [run_model(p) for p in patients]
+            
+            # Summary Metrics
+            high_risk_count = sum(1 for o in outputs if o.risk_label == "High Risk")
+            avg_p = sum(o.p_cervical_insufficiency for o in outputs) / len(outputs)
+            
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Total Patients", len(patients))
+            c2.metric("High Risk Patients", f"{high_risk_count}")
+            c3.metric("Avg Risk Probability", f"{avg_p*100:.1f}%")
+            
+            # Display results table
+            data_dict = [{
+                "Name": p.patient_name,
+                "Risk Tier": o.risk_tier,
+                "Prob(CI)": f"{o.p_cervical_insufficiency*100:.1f}%",
+                "CL Used": f"{o.cl_used_cm:.2f} cm"
+            } for p, o in zip(patients, outputs)]
+            
+            st.dataframe(pd.DataFrame(data_dict), use_container_width=True)
+            
+            st.success("Analysis Complete. For full Plotly interactive visuals, run the visualize module.")
+            # Note: You can embed Plotly charts directly here using st.plotly_chart() 
+            # if your build_dashboard function returns a figure.

@@ -52,7 +52,7 @@ def equation_a_cl_predicted(isthmic_contraction: int, prev_pregnancies: int) -> 
     P = number of previous pregnancies ≥23 weeks
     """
     cl = 3.9974 - 0.4031 * isthmic_contraction - 0.7930 * prev_pregnancies
-    return max(cl, 0.0)
+    return max(cl, 0.5)
 
 
 def equation_b_cl_adjusted(cl_cm: float, ga_decimal: float) -> float:
@@ -73,7 +73,7 @@ def equation_c_csis(cl_cm: float, ga_decimal: float,
     Higher = more structurally sound = lower risk.
     """
     cl_adj = equation_b_cl_adjusted(cl_cm, ga_decimal)
-    return 3 * cl_cm - 2 * cl_adj - isthmic_contraction - prev_cesarean
+    return (3 * cl_cm) - (2 * cl_adj) - isthmic_contraction - prev_cesarean
 
 
 def equation_d_probability(csis: float) -> float:
@@ -91,7 +91,21 @@ def equation_d_probability(csis: float) -> float:
     exponent = k * (csis - csis_mid)
     exponent = max(-500, min(500, exponent))
     return 1.0 / (1.0 + math.exp(exponent))
-
+# if above incorect, try this:
+# """
+#     Eq D: P(CI) = 1 / (1 + e^(CSIS - 2.5))
+    
+#     Logic Check:
+#     - High CSIS (e.g. 10.0) -> exponent 7.5 -> Low Probability (~0.0005)
+#     - Low CSIS (e.g. 1.0)  -> exponent -1.5 -> High Probability (~0.81)
+#     - CSIS at 2.5 (Tipping point) -> exponent 0 -> 50% Probability
+#     """
+#     try:
+#         exponent = csis - 2.5
+#         exponent = max(-500, min(500, exponent))  # Prevent math overflow
+#         return 1.0 / (1.0 + math.exp(exponent))
+#     except OverflowError:
+#         return 0.0 if csis > 2.5 else 1.0
 
 def risk_tier_from_probability(p: float) -> tuple[str, str]:
     if p >= 0.75:
